@@ -14,13 +14,18 @@ function cleardir(dirpath, callback) {
     try {
         files = tree(dirpath);
     } catch (err) {
-        if (err && err.code !== 'ENOENT') callback(err);
+        if (err && err.code !== 'ENOENT') return callback(err);
     }
     function loop(err) {
-        if (err) return callback(err);
+        // A missing file is fine here: concurrent metatile renders delete their
+        // own .lock files, so a clear can race with them. Treat ENOENT as done
+        // for that entry rather than aborting the whole clear (which used to
+        // crash the server with an uncaught throw).
+        if (err && err.code !== 'ENOENT') return callback(err);
         var file = files[i++];
         if (!file) return callback();
         if (file.stat.isFile()) fs.unlink(file.path, loop);
+        else loop();
     }
     loop();
 }
