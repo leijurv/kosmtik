@@ -19,6 +19,25 @@ L.Kosmtik.BufferInput = L.FormBuilder.BlurIntInput.extend({
 
 });
 
+// TileLayer that lets the Retina (hidpi) state be controlled from the UI
+// instead of being hard-wired to the browser's display. Leaflet fills the
+// {r} placeholder ('@2x' or '') from L.Browser.retina inside getTileUrl, so we
+// temporarily override that flag with L.K.Config.retina for the duration of the
+// call rather than reimplementing Leaflet's URL building.
+L.Kosmtik.TileLayer = L.TileLayer.extend({
+
+    getTileUrl: function (coords) {
+        var detected = L.Browser.retina;
+        L.Browser.retina = !!L.K.Config.retina;
+        try {
+            return L.TileLayer.prototype.getTileUrl.call(this, coords);
+        } finally {
+            L.Browser.retina = detected;
+        }
+    }
+
+});
+
 L.Kosmtik.Map = L.Map.extend({
 
     options: {
@@ -26,6 +45,9 @@ L.Kosmtik.Map = L.Map.extend({
     },
 
     initialize: function (options) {
+        // Retina defaults to whatever the display reports (autodetect), but can
+        // then be toggled from the Settings sidebar.
+        if (L.K.Config.retina === undefined) L.K.Config.retina = L.Browser.retina;
         // Buffer size defaults to the project's configured value.
         if (L.K.Config.buffer === undefined) L.K.Config.buffer = L.K.Config.project.bufferSize || 256;
         this.sidebar = new L.Kosmtik.Sidebar().addTo(this);
@@ -33,6 +55,7 @@ L.Kosmtik.Map = L.Map.extend({
         this.commands = new L.Kosmtik.Command(this);
         this.settingsForm = new L.K.SettingsForm(this);
         this.settingsForm.addElement(['autoReload', {handler: L.K.Switch, label: 'Autoreload', helpText: 'Reload map as soon as a project file is changed on the server.'}]);
+        this.settingsForm.addElement(['retina', {handler: L.K.Switch, label: 'Retina (hidpi)', helpText: 'Render high-resolution @2x tiles. Autodetected from your display by default.'}]);
         this.settingsForm.addElement(['buffer', {handler: L.K.BufferInput, label: 'Buffer size (px)', helpText: 'Mapnik render buffer in pixels. Larger values avoid labels/shields being clipped at tile edges, at the cost of render speed. Applied on blur or Enter.'}]);
         this.settingsForm.addElement(['backendPolling', {handler: L.K.Switch, label: '(Advanced) Poll backend for project updates'}]);
         this.createPollIndicator();
@@ -50,7 +73,7 @@ L.Kosmtik.Map = L.Map.extend({
             minZoom: this.options.minZoom,
             maxZoom: this.options.maxZoom
         };
-        this.tilelayer = new L.TileLayer('./tile/{z}/{x}/{y}{r}.png?t={version}&buffer={buffer}', tilelayerOptions).addTo(this);
+        this.tilelayer = new L.Kosmtik.TileLayer('./tile/{z}/{x}/{y}{r}.png?t={version}&buffer={buffer}', tilelayerOptions).addTo(this);
         this.tilelayer.on('loading', function () {
             this.setState('loading');
         }, this);
@@ -64,6 +87,7 @@ L.Kosmtik.Map = L.Map.extend({
         });
         this.on('settings:synced', function (e) {
             if (e.helper.field === 'backendPolling') this.togglePoll();
+            if (e.helper.field === 'retina') this.tilelayer.redraw();
             if (e.helper.field === 'buffer') {
                 this.tilelayer.options.buffer = L.K.Config.buffer;
                 this.tilelayer.redraw();
