@@ -69,19 +69,28 @@ class ProjectServer {
         }
     };
 
-    tile(z, x, y, res) {
+    tile(z, x, y, res, query) {
+        query = query || {};
         var self = this,
             yels = y.split('@'),
             y = yels[0],
             scale = yels[1] ? parseInt(yels[1], 10) : 1,
             mapScale = scale * (this.project.mml.scale || 1),
             size = this.project.tileSize() * scale,  // retina?
+            // Let the UI override the Mapnik buffer size per request; fall back
+            // to the project default.
+            buffer = (query.buffer !== undefined && query.buffer !== '') ? parseInt(query.buffer, 10) : this.project.bufferSize(),
             mapPool = scale === 2 ? this.retinaPool : this.mapPool;
+        if (isNaN(buffer)) buffer = self.project.bufferSize();
         mapPool.acquire(function (err, map) {
             var release = function () {mapPool.release(map);};
             if (err) return self.raise(err.message, res);
+            // Apply on the pooled map (datasource query buffer) and pass it
+            // through to the tile (raster render buffer). Maps are pooled and
+            // reused, so set this explicitly on every request.
+            map.bufferSize = buffer;
             var tileClass = self.project.mml.source ? VectorBasedTile : self.project.metatile() === 1 ? Tile : MetatileBasedTile;
-            var tile = new tileClass(z, x, y, {size: size, metatile: self.project.metatile(), mapScale: mapScale});
+            var tile = new tileClass(z, x, y, {size: size, metatile: self.project.metatile(), mapScale: mapScale, buffer_size: buffer});
             return tile.render(self.project, map, function (err, im) {
                 if (err) return self.raise(err.message, res, release);
                 im.encode('png', (function (err, buffer) {

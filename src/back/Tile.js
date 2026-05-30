@@ -32,7 +32,11 @@ class Tile {
         this.setupBounds();
         map.zoomToBox(this.projection.forward([this.minX, this.minY, this.maxX, this.maxY]));
         var im = new mapnik.Image(this.height, this.width);
-        map.render(im, {scale: this.mapScale || 1, variables: {zoom: this.z}}, cb);
+        // buffer_size must be passed in the render options: Mapnik does not use
+        // the Map's bufferSize property for image rendering, so without this the
+        // raster render buffer is 0 and symbols (e.g. shields) are clipped at
+        // metatile edges, even when map.bufferSize is set.
+        map.render(im, {scale: this.mapScale || 1, buffer_size: this.buffer_size, variables: {zoom: this.z}}, cb);
     };
 
     renderToVector(project, map, cb) {

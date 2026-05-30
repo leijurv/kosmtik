@@ -61,7 +61,7 @@ class Project extends ConfigEmitter {
         options = options || {};
         this.render();
         this.config.log('Loading map…');
-        if (!options.bufferSize) options.bufferSize = this.mml.bufferSize || 256;
+        if (!options.bufferSize) options.bufferSize = this.bufferSize();
         if(!options.size) options.size = this.metatileSize() * (options.scale || 1);
         this.mapPool = this.mapnikPool.fromString(this.xml, options, {base: this.root});
         this.config.log('Map ready');
@@ -85,6 +85,7 @@ class Project extends ConfigEmitter {
             metatile: this.metatile(),
             name: this.mml.name || '',
             tileSize: this.tileSize(),
+            bufferSize: this.bufferSize(),
             loadTime: this.loadTime,
             layers: this.mml.Layer || []
         };
@@ -94,6 +95,10 @@ class Project extends ConfigEmitter {
 
     tileSize() {
         return 256;
+    };
+
+    bufferSize() {
+        return this.mml.bufferSize || 256;
     };
 
     metatileSize() {
