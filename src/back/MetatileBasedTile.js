@@ -14,12 +14,16 @@ class MetatileBasedTile {
         this.format = options.format || 'png';
         this.size = options.size || 256;
         this.mapScale = options.mapScale || 1;
+        this.buffer_size = options.buffer_size || 0;
         this.options = options;
     }
 
     render(project, map, cb) {
+        // The buffer size is part of the cache key: a metatile rendered with a
+        // different buffer is a different image, so changing the buffer must not
+        // serve a stale cached metatile.
         var self = this, basePath = project.getMetaCacheDir(),
-            baseName = this.z + '.' + this.metaX + '.' + this.metaY + 'x' + this.mapScale,
+            baseName = this.z + '.' + this.metaX + '.' + this.metaY + 'x' + this.mapScale + 'b' + this.buffer_size,
             metaPath = path.join(basePath,  baseName + '.meta'),
             lockPath = path.join(basePath, baseName + '.lock');
 
@@ -69,7 +73,7 @@ class MetatileBasedTile {
 
     renderMetatile(metaPath, project, map, cb) {
         var self = this;
-        var tile = new Tile(self.z, self.metaX, self.metaY, {size: this.metatile * this.size, scale: this.metatile, mapScale: this.mapScale});
+        var tile = new Tile(self.z, self.metaX, self.metaY, {size: this.metatile * this.size, scale: this.metatile, mapScale: this.mapScale, buffer_size: this.buffer_size});
         tile.render(project, map, function (err, im) {
             if (err) return cb(err);
             im.encode(self.format, function (err, buffer) {
