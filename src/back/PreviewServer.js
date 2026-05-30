@@ -28,7 +28,14 @@ class PreviewServer extends ConfigEmitter {
         this.projects = {};
         this.server = http.createServer();
         this.server.on('request', this.serve.bind(this));
+        // Disable every HTTP timeout: tile renders and heavy DB queries can take
+        // far longer than Node's defaults (requestTimeout/headersTimeout were
+        // added in Node 18 and abort slow requests). Zero them all so previews
+        // are never cut off mid-render.
         this.server.timeout = 0;
+        this.server.requestTimeout = 0;
+        this.server.headersTimeout = 0;
+        this.server.keepAliveTimeout = 0;
         this.root = root;
         this.emitAndForward('init');
         this.config.on('command:serve', this.listen.bind(this));
@@ -54,6 +61,9 @@ class PreviewServer extends ConfigEmitter {
     };
 
     serve(req, res) {
+        // Also clear the per-socket timeouts for this request/response pair.
+        req.setTimeout(0);
+        res.setTimeout(0);
         res.on('finish', function () {
             // 204 are empty responses from poller, do not pollute
             if (this.statusCode !== 204) console.warn('[httpserver]', req.url, this.statusCode);
