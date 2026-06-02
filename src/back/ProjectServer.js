@@ -82,16 +82,38 @@ class ProjectServer {
             buffer = (query.buffer !== undefined && query.buffer !== '') ? parseInt(query.buffer, 10) : this.project.bufferSize(),
             mapPool = scale === 2 ? this.retinaPool : this.mapPool;
         if (isNaN(buffer)) buffer = self.project.bufferSize();
+        // If the client pans or zooms away it aborts the <img> request and the
+        // socket closes. Record that on a small object shared with the renderer so
+        // a fast pan/zoom doesn't pile up stale renders — or tie up pooled maps
+        // waiting on a sibling metatile — ahead of the tiles that are visible now.
+        var label = z + '/' + x + '/' + y + (scale === 2 ? '@2x' : ''),
+            t0 = Date.now(),
+            request = {canceled: false, onCancel: null};
+        res.on('close', function () {
+            if (request.canceled) return;
+            request.canceled = true;
+            if (request.onCancel) request.onCancel();  // wake anything blocked, e.g. a metatile lock wait
+        });
         mapPool.acquire(function (err, map) {
             var release = function () {mapPool.release(map);};
             if (err) return self.raise(err.message, res);
+            // Reached the head of the pool queue, but the client already gave up:
+            // hand the map straight back instead of rendering a tile no one wants.
+            if (request.canceled) {
+                console.warn('[tile] canceled', label, '(skipped, ' + (Date.now() - t0) + 'ms queued)');
+                return release();
+            }
             // Apply on the pooled map (datasource query buffer) and pass it
             // through to the tile (raster render buffer). Maps are pooled and
             // reused, so set this explicitly on every request.
             map.bufferSize = buffer;
             var tileClass = self.project.mml.source ? VectorBasedTile : self.project.metatile() === 1 ? Tile : MetatileBasedTile;
-            var tile = new tileClass(z, x, y, {size: size, metatile: self.project.metatile(), mapScale: mapScale, buffer_size: buffer});
+            var tile = new tileClass(z, x, y, {size: size, metatile: self.project.metatile(), mapScale: mapScale, buffer_size: buffer, request: request});
             return tile.render(self.project, map, function (err, im) {
+                if (request.canceled) {  // gave up during the render, or while waiting on a sibling metatile
+                    console.warn('[tile] canceled', label, '(dropped, held a map ' + (Date.now() - t0) + 'ms)');
+                    return release();
+                }
                 if (err) return self.raise(err.message, res, release);
                 im.encode('png', (function (err, buffer) {
                     if (err) return self.raise(err.message, res, release);

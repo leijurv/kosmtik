@@ -15,6 +15,9 @@ class MetatileBasedTile {
         this.size = options.size || 256;
         this.mapScale = options.mapScale || 1;
         this.buffer_size = options.buffer_size || 0;
+        // Shared cancellation flag (see ProjectServer.tile): lets us stop waiting
+        // on another request's metatile lock once the client has navigated away.
+        this.request = options.request || {canceled: false, onCancel: null};
         this.options = options;
     }
 
@@ -27,23 +30,38 @@ class MetatileBasedTile {
             metaPath = path.join(basePath,  baseName + '.meta'),
             lockPath = path.join(basePath, baseName + '.lock');
 
+        // Client already gave up before we got here: don't start.
+        if (self.request.canceled) return cb(null, null);
+
         fs.readFile(metaPath, function (err, data) {
             if (err) {
                 if (err.code !== 'ENOENT') return cb(err);
                 fs.writeFile(lockPath, '', {flag: 'wx'}, function (err) {
                     if (err && err.code === 'EEXIST') {
+                        // Someone else is already rendering this metatile. Wait for
+                        // them — but if the client gives up while we wait, stop
+                        // waiting and hand the pooled map back right away instead of
+                        // holding it for the whole of the other render.
+                        var watcher, finished = false;
+                        var stop = function (retry) {
+                            if (finished) return;
+                            finished = true;
+                            self.request.onCancel = null;
+                            if (watcher) { try { watcher.close(); } catch (e) {} }
+                            if (retry) self.render(project, map, cb);  // lock cleared -> now a cache hit
+                            else cb(null, null);                       // canceled -> give up, free the map
+                        };
                         try {
-                            var watcher = fs.watch(lockPath);
+                            watcher = fs.watch(lockPath);
                             watcher.on('change', function (event) {  // Someone else is building the metatile, keep calm and wait.
-                                if (event === 'rename') { // lock has been deleted
-                                    watcher.close();
-                                    self.render(project, map, cb);  // Try again
-                                }
-                                // else just wait again
+                                if (event === 'rename') stop(true);  // lock has been deleted
                             });
                         } catch (err) {
                             if (err.code !== 'ENOENT') return cb(err);
+                            return stop(true);  // lock vanished between writeFile and watch
                         }
+                        self.request.onCancel = function () { stop(false); };
+                        if (self.request.canceled) stop(false);  // already canceled before we registered
                     } else if (err) {
                         return cb(err);
                     } else  {
