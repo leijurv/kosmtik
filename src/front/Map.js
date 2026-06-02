@@ -1,24 +1,3 @@
-// Numeric input for the Mapnik buffer size.
-// The idea is to not re-render on every keystroke, since re-rendering each intermediate value (2, then 25, then 256…) is very slow.
-L.Kosmtik.BufferInput = L.FormBuilder.BlurIntInput.extend({
-
-    value: function () {
-        var v = parseInt(this.input.value, 10);
-        if (isNaN(v) || v < 0) v = 0;
-        if (String(v) !== this.input.value) this.input.value = v;  // normalise the displayed text (e.g. '' -> '0')
-        return v;
-    },
-
-    sync: function () {
-        var v = this.value();
-        if (this.initial !== v) {
-            L.FormBuilder.Input.prototype.sync.call(this);  // presync -> set -> postsync (commit + redraw)
-            this.initial = v;  // don't re-commit the same value on a subsequent blur
-        }
-    }
-
-});
-
 L.Kosmtik.Map = L.Map.extend({
 
     options: {
@@ -26,14 +5,11 @@ L.Kosmtik.Map = L.Map.extend({
     },
 
     initialize: function (options) {
-        // Buffer size defaults to the project's configured value.
-        if (L.K.Config.buffer === undefined) L.K.Config.buffer = L.K.Config.project.bufferSize || 256;
         this.sidebar = new L.Kosmtik.Sidebar().addTo(this);
         this.toolbar = new L.Kosmtik.Toolbar().addTo(this);
         this.commands = new L.Kosmtik.Command(this);
         this.settingsForm = new L.K.SettingsForm(this);
         this.settingsForm.addElement(['autoReload', {handler: L.K.Switch, label: 'Autoreload', helpText: 'Reload map as soon as a project file is changed on the server.'}]);
-        this.settingsForm.addElement(['buffer', {handler: L.K.BufferInput, label: 'Buffer size (px)', helpText: 'Mapnik render buffer in pixels. Larger values avoid labels/shields being clipped at tile edges, at the cost of render speed. Applied on blur or Enter.'}]);
         this.settingsForm.addElement(['backendPolling', {handler: L.K.Switch, label: '(Advanced) Poll backend for project updates'}]);
         this.createPollIndicator();
         this.createReloadButton();
@@ -46,11 +22,10 @@ L.Kosmtik.Map = L.Map.extend({
         var tilelayerOptions = {
             version: L.K.Config.project.loadTime,
             tileSize: L.K.Config.project.tileSize,
-            buffer: L.K.Config.buffer,
             minZoom: this.options.minZoom,
             maxZoom: this.options.maxZoom
         };
-        this.tilelayer = new L.TileLayer('./tile/{z}/{x}/{y}{r}.png?t={version}&buffer={buffer}', tilelayerOptions).addTo(this);
+        this.tilelayer = new L.TileLayer('./tile/{z}/{x}/{y}{r}.png?t={version}', tilelayerOptions).addTo(this);
         this.tilelayer.on('loading', function () {
             this.setState('loading');
         }, this);
@@ -64,10 +39,6 @@ L.Kosmtik.Map = L.Map.extend({
         });
         this.on('settings:synced', function (e) {
             if (e.helper.field === 'backendPolling') this.togglePoll();
-            if (e.helper.field === 'buffer') {
-                this.tilelayer.options.buffer = L.K.Config.buffer;
-                this.tilelayer.redraw();
-            }
         });
         this.help = new L.Kosmtik.Help(this);
         if(L.K.Config.project.name.length) document.title = L.K.Config.project.name + ' — Kosmtik';

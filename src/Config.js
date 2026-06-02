@@ -151,6 +151,10 @@ class Config extends StateBase {
         this.opts.option('metatile', {
             help: 'Override mml metatile setting [Default: mml setting]'
         });
+        this.opts.option('buffer_size', {
+            full: 'buffer-size',
+            help: 'Override mml bufferSize setting, in pixels. Larger values avoid labels/shields being clipped at metatile edges, at the cost of render speed. [Default: mml setting or 256]'
+        });
         this.opts.option('style_id', {
             type: 'string',
             full: 'style-id',

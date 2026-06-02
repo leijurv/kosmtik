@@ -85,7 +85,6 @@ class Project extends ConfigEmitter {
             metatile: this.metatile(),
             name: this.mml.name || '',
             tileSize: this.tileSize(),
-            bufferSize: this.bufferSize(),
             loadTime: this.loadTime,
             layers: this.mml.Layer || []
         };
@@ -98,6 +97,14 @@ class Project extends ConfigEmitter {
     };
 
     bufferSize() {
+        // --buffer-size on the CLI overrides the mml setting. parseInt so a
+        // string arg ("0") works, and so an explicit 0 (no buffer) is honoured
+        // rather than falling through as falsy.
+        var cli = this.config.parsed_opts.buffer_size;
+        if (cli !== undefined && cli !== null && cli !== '') {
+            var n = parseInt(cli, 10);
+            if (!isNaN(n)) return n;
+        }
         return this.mml.bufferSize || 256;
     };
 
