@@ -88,3 +88,13 @@ li.reload:before {
 .toolbar .k-command-palette {
     margin-right: 10px;
 }
+
+/* On narrow screens, hide the wide controls that would wrap onto a second
+   line: the command palette (keyboard-only, useless on touch) and the
+   Data Inspector switch. Keep Reload + the sync indicator on one line. */
+@media (max-width: 700px) {
+    .toolbar .k-command-palette,
+    .toolbar ul li.with-switch {
+        display: none;
+    }
+}
