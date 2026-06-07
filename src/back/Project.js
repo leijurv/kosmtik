@@ -1,6 +1,7 @@
 var path = require('path'),
     fs = require('fs'),
     ConfigEmitter = require('./ConfigEmitter.js').ConfigEmitter,
+    RenderPool = require('./RenderPool.js').RenderPool,
     Utils = require('./Utils.js');
 
 class Project extends ConfigEmitter {
@@ -63,9 +64,45 @@ class Project extends ConfigEmitter {
         this.config.log('Loading map…');
         if (!options.bufferSize) options.bufferSize = this.bufferSize();
         if(!options.size) options.size = this.metatileSize() * (options.scale || 1);
-        this.mapPool = this.mapnikPool.fromString(this.xml, options, {base: this.root});
+        // Return the pool; don't stash it on `this` — createMapPool is called
+        // several times for different pools and a shared field would alias them.
+        var pool = this.mapnikPool.fromString(this.xml, options, {base: this.root});
         this.config.log('Map ready');
-        return this.mapPool;
+        return pool;
+    };
+
+    // Compile the Mapnik XML and write it to a file the render workers load (it's
+    // too large to pass over IPC). Versioned by loadTime so a reload's new XML
+    // never collides with a still-shutting-down worker reading the old one.
+    writeRenderXml() {
+        this.render();
+        var dir = path.resolve(this.getMetaCacheDir());
+        fs.mkdirSync(dir, {recursive: true});
+        var xmlPath = path.join(dir, this.id + '.' + this.loadTime + '.xml');
+        fs.writeFileSync(xmlPath, this.xml);
+        if (this._renderXmlPath && this._renderXmlPath !== xmlPath) {
+            try { fs.unlinkSync(this._renderXmlPath); } catch (e) { /* gone already */ }
+        }
+        this._renderXmlPath = xmlPath;
+        return xmlPath;
+    };
+
+    // A pool of killable child-process renderers, used for the raster tile path
+    // of non-vector-source projects (see ProjectServer.tile). options.scale === 2
+    // gives the retina map size, mirroring createMapPool({scale: 2}).
+    createRenderPool(options) {
+        options = options || {};
+        var scale = options.scale || 1;
+        return new RenderPool({
+            label: scale === 2 ? 'render@2x' : 'render',
+            targetSize: options.targetSize,
+            killAfterMs: options.killAfterMs,
+            xmlPath: this.writeRenderXml(),
+            base: this.root,
+            fontsDir: path.join(this.root, 'fonts'),
+            mapSize: this.metatileSize() * scale,
+            bufferSize: this.bufferSize()
+        });
     };
 
     export(options, callback) {

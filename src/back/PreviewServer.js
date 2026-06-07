@@ -56,6 +56,24 @@ class PreviewServer extends ConfigEmitter {
         this.projects[project.id] = new ProjectServer(project, this);  // TODO avoid cross ref
     };
 
+    // Graceful teardown (SIGINT/SIGTERM): kill render workers and drain pools so
+    // we don't orphan child processes holding Postgres connections.
+    shutdown() {
+        for (var id in this.projects) {
+            if (!this.projects.hasOwnProperty(id)) continue;
+            try { this.projects[id].destroyPools(); } catch (e) { /* keep tearing down */ }
+        }
+    };
+
+    // Synchronous SIGKILL of every render worker, safe to call from process
+    // 'exit' (no async allowed there).
+    killAllWorkers() {
+        for (var id in this.projects) {
+            if (!this.projects.hasOwnProperty(id)) continue;
+            try { this.projects[id].killWorkers(); } catch (e) { /* best effort */ }
+        }
+    };
+
     setDefaultProject(project) {
         this.defaultProject = project;
     };

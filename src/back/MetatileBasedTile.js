@@ -1,7 +1,9 @@
 var fs = require('fs'),
     mapnik = require('@mapnik/mapnik'),
-    Tile = require('./Tile.js').Tile,
     path = require('path');
+
+// Counter to keep this process's in-flight temp files unique.
+var tmpCounter = 0;
 
 class MetatileBasedTile {
     constructor(z, x, y, options) {
@@ -18,10 +20,18 @@ class MetatileBasedTile {
         // Shared cancellation flag (see ProjectServer.tile): lets us stop waiting
         // on another request's metatile lock once the client has navigated away.
         this.request = options.request || {canceled: false, onCancel: null};
+        // Pool of killable render workers (see RenderPool). The actual Mapnik
+        // render runs in a child process so it can be SIGKILLed; all cache/lock
+        // bookkeeping stays here in the parent so a killed worker can never strand
+        // a .lock or leave a half-written .meta.
+        this.pool = options.pool;
         this.options = options;
     }
 
-    render(project, map, cb) {
+    // cb(err, pngBuffer). pngBuffer is this tile's PNG on success; null when the
+    // client gave up (request.canceled) — the caller checks request.canceled
+    // before responding.
+    render(project, cb) {
         // The buffer size is part of the cache key: a metatile rendered with a
         // different buffer is a different image, so changing the buffer must not
         // serve a stale cached metatile.
@@ -40,16 +50,16 @@ class MetatileBasedTile {
                     if (err && err.code === 'EEXIST') {
                         // Someone else is already rendering this metatile. Wait for
                         // them — but if the client gives up while we wait, stop
-                        // waiting and hand the pooled map back right away instead of
-                        // holding it for the whole of the other render.
+                        // waiting and return right away instead of blocking on the
+                        // whole of the other render.
                         var watcher, finished = false;
                         var stop = function (retry) {
                             if (finished) return;
                             finished = true;
                             self.request.onCancel = null;
                             if (watcher) { try { watcher.close(); } catch (e) {} }
-                            if (retry) self.render(project, map, cb);  // lock cleared -> now a cache hit
-                            else cb(null, null);                       // canceled -> give up, free the map
+                            if (retry) self.render(project, cb);  // lock cleared -> now a cache hit
+                            else cb(null, null);                  // canceled -> give up
                         };
                         try {
                             watcher = fs.watch(lockPath);
@@ -65,13 +75,8 @@ class MetatileBasedTile {
                     } else if (err) {
                         return cb(err);
                     } else  {
-                        self.renderMetatile(metaPath, project, map, function (err, buffer) {
-                            fs.unlink(lockPath, function (err2) {
-                                if (err) return cb(err);
-                                if (err2 && err2.code !== 'ENOENT') return cb(err2);
-                                self.extractFromBytes(buffer, cb);
-                            });
-                        });
+                        // We hold the lock: render the metatile in a worker.
+                        self.renderMetatile(metaPath, lockPath, cb);
                     }
                 });
             } else {
@@ -80,29 +85,60 @@ class MetatileBasedTile {
         });
     }
 
+    renderMetatile(metaPath, lockPath, cb) {
+        var self = this;
+        // Worker writes here; we publish atomically with rename() so a SIGKILL
+        // mid-write can never leave a partial .meta. Absolute so the path is
+        // unambiguous in the child.
+        var tmpPath = path.resolve(metaPath + '.' + process.pid + '.' + (tmpCounter++) + '.tmp');
+        var params = {
+            z: self.z,
+            x: self.metaX,
+            y: self.metaY,
+            size: self.metatile * self.size,
+            scale: self.metatile,
+            mapScale: self.mapScale,
+            buffer_size: self.buffer_size
+        };
+        self.pool.render(params, tmpPath, self.request, function (err) {
+            if (err) {
+                // Failed, killed (preempted), or canceled before/while rendering.
+                // Always release the lock so sibling tiles don't hang on fs.watch,
+                // and drop any temp file the worker may have left.
+                fs.unlink(lockPath, function () {});
+                fs.unlink(tmpPath, function () {});
+                if (self.request.canceled) return cb(null, null);  // navigated away
+                return cb(err);
+            }
+            // Success — even if the client has since navigated away, publish to
+            // the cache (warms it for free) before unlocking and extracting.
+            fs.readFile(tmpPath, function (rerr, data) {
+                if (rerr) {
+                    fs.unlink(lockPath, function () {});
+                    return cb(rerr);
+                }
+                fs.rename(tmpPath, metaPath, function () {
+                    fs.unlink(lockPath, function () {
+                        self.extractFromBytes(data, cb);
+                    });
+                });
+            });
+        });
+    };
+
     extractFromBytes(buffer, cb) {
         var self = this;
         mapnik.Image.fromBytes(buffer, function (err, im) {
             if (err) return cb(err);
             var view = im.view(self.size * (self.x % self.metatile), self.size * (self.y % self.metatile), self.size, self.size);
-            cb(null, view);
-        });
-    }
-
-    renderMetatile(metaPath, project, map, cb) {
-        var self = this;
-        var tile = new Tile(self.z, self.metaX, self.metaY, {size: this.metatile * this.size, scale: this.metatile, mapScale: this.mapScale, buffer_size: this.buffer_size});
-        tile.render(project, map, function (err, im) {
-            if (err) return cb(err);
-            im.encode(self.format, function (err, buffer) {
+            // Return encoded PNG bytes: unlike the old in-process path, the caller
+            // (ProjectServer.tile) writes these straight to the response.
+            view.encode(self.format, function (err, out) {
                 if (err) return cb(err);
-                fs.writeFile(metaPath, buffer, {flag: 'wx'}, function (err) {
-                    if (err && err.code !== 'EEXIST') return cb(err);
-                    cb(null, buffer);
-                });
+                cb(null, out);
             });
         });
-    };
+    }
 }
 
 exports = module.exports = { Tile: MetatileBasedTile };
