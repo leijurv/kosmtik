@@ -151,6 +151,16 @@ class Config extends StateBase {
         this.opts.option('metatile', {
             help: 'Override mml metatile setting [Default: mml setting]'
         });
+        // No static defaults here: initOptions() runs before loadUserConfig(), so
+        // the userConfig fallback is resolved at point of use (see ProjectServer).
+        this.opts.option('render_workers', {
+            full: 'render-workers',
+            help: 'Number of killable render worker processes per raster pool [Default: renderWorkers user config, or 6]'
+        });
+        this.opts.option('render_kill_after', {
+            full: 'render-kill-after',
+            help: 'Only interrupt an abandoned render once it has run this many ms [Default: renderKillAfter user config, or 5000]'
+        });
         this.opts.option('style_id', {
             type: 'string',
             full: 'style-id',

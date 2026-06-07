@@ -79,26 +79,59 @@ class ProjectServer {
             size = this.project.tileSize() * scale,  // retina?
             // Let the UI override the Mapnik buffer size per request; fall back
             // to the project default.
-            buffer = (query.buffer !== undefined && query.buffer !== '') ? parseInt(query.buffer, 10) : this.project.bufferSize(),
-            mapPool = scale === 2 ? this.retinaPool : this.mapPool;
+            buffer = (query.buffer !== undefined && query.buffer !== '') ? parseInt(query.buffer, 10) : this.project.bufferSize();
         if (isNaN(buffer)) buffer = self.project.bufferSize();
         // If the client pans or zooms away it aborts the <img> request and the
         // socket closes. Record that on a small object shared with the renderer so
-        // a fast pan/zoom doesn't pile up stale renders — or tie up pooled maps
-        // waiting on a sibling metatile — ahead of the tiles that are visible now.
+        // a fast pan/zoom doesn't pile up stale renders ahead of the tiles that
+        // are visible now (and so a stale render can be interrupted, see below).
         var label = z + '/' + x + '/' + y + (scale === 2 ? '@2x' : ''),
             t0 = Date.now(),
             request = {canceled: false, onCancel: null};
         res.on('close', function () {
             if (request.canceled) return;
             request.canceled = true;
-            if (request.onCancel) request.onCancel();  // wake anything blocked, e.g. a metatile lock wait
+            if (request.onCancel) request.onCancel();  // wake a lock wait, or let the pool preempt a stale render
         });
+
+        // Vector-source projects render from a vector tile in-process (out of
+        // scope for killable workers); keep the existing pooled-map path.
+        if (this.project.mml.source) {
+            return this.tileFromSource(z, x, y, scale, mapScale, size, buffer, request, label, t0, res);
+        }
+
+        // Raster path: render the metatile in a killable child process so a stale
+        // render is reclaimed when the client navigates away (see RenderPool). A
+        // worker is only used at the actual render point; cache hits and lock
+        // waits never tie one up. The worker writes the metatile to disk and we
+        // crop this tile's view here, in-process.
+        var tile = new MetatileBasedTile(z, x, y, {
+            size: size,
+            metatile: self.project.metatile(),
+            mapScale: mapScale,
+            buffer_size: buffer,
+            request: request,
+            pool: self.renderPoolFor(scale)
+        });
+        tile.render(self.project, function (err, png) {
+            if (request.canceled) {
+                console.warn('[tile] canceled', label, '(' + (Date.now() - t0) + 'ms)');
+                return;  // socket already closed; a finished render still warmed the cache
+            }
+            if (err) return self.raise(err.message, res);
+            if (!png) return;  // nothing to send
+            console.warn('[tile] ok', label, '(' + (Date.now() - t0) + 'ms)');
+            res.writeHead(200, {'Content-Type': 'image/png', 'Content-Length': png.length});
+            res.end(png);
+        });
+    };
+
+    tileFromSource(z, x, y, scale, mapScale, size, buffer, request, label, t0, res) {
+        var self = this,
+            mapPool = scale === 2 ? this.retinaPool : this.mapPool;
         mapPool.acquire(function (err, map) {
             var release = function () {mapPool.release(map);};
             if (err) return self.raise(err.message, res);
-            // Reached the head of the pool queue, but the client already gave up:
-            // hand the map straight back instead of rendering a tile no one wants.
             if (request.canceled) {
                 console.warn('[tile] canceled', label, '(skipped, ' + (Date.now() - t0) + 'ms queued)');
                 return release();
@@ -107,16 +140,16 @@ class ProjectServer {
             // through to the tile (raster render buffer). Maps are pooled and
             // reused, so set this explicitly on every request.
             map.bufferSize = buffer;
-            var tileClass = self.project.mml.source ? VectorBasedTile : self.project.metatile() === 1 ? Tile : MetatileBasedTile;
-            var tile = new tileClass(z, x, y, {size: size, metatile: self.project.metatile(), mapScale: mapScale, buffer_size: buffer, request: request});
+            var tile = new VectorBasedTile(z, x, y, {size: size, metatile: self.project.metatile(), mapScale: mapScale, buffer_size: buffer, request: request});
             return tile.render(self.project, map, function (err, im) {
-                if (request.canceled) {  // gave up during the render, or while waiting on a sibling metatile
+                if (request.canceled) {
                     console.warn('[tile] canceled', label, '(dropped, held a map ' + (Date.now() - t0) + 'ms)');
                     return release();
                 }
                 if (err) return self.raise(err.message, res, release);
                 im.encode('png', (function (err, buffer) {
                     if (err) return self.raise(err.message, res, release);
+                    console.warn('[tile] ok', label, '(' + (Date.now() - t0) + 'ms)');
                     res.writeHead(200, {'Content-Type': 'image/png', 'Content-Length': buffer.length});
                     res.write(buffer);
                     res.end();
@@ -328,23 +361,30 @@ class ProjectServer {
 
     reload(res) {
         var self = this;
+        // A stylesheet save can fire several reloads in a row; serialize them so
+        // we don't tear down and re-init the pools concurrently.
+        if (this._reloading) {
+            res.writeHead(200, {'Content-Type': 'application/json'});
+            return res.end(JSON.stringify(this.project.toFront()));
+        }
+        this._reloading = true;
         try {
             this.project.reload();
         } catch (err) {
+            this._reloading = false;
             return this.raise(err.message, res);
         }
         this.project.when('loaded', function () {
-            self.mapPool.drain(function() {
-                self.mapPool.destroyAllNow();
-            });
-            self.vectorMapPool.drain(function() {
-                self.vectorMapPool.destroyAllNow();
-            });
+            // Kill all render workers and drain the in-process pools before
+            // respawning against the freshly compiled XML.
+            self.destroyPools();
             try {
                 self.initMapPools();
             } catch (err) {
+                self._reloading = false;
                 return self.raise(err.message, res);
             }
+            self._reloading = false;
             res.writeHead(200, {
                 'Content-Type': 'application/json'
             });
@@ -353,9 +393,64 @@ class ProjectServer {
     };
 
     initMapPools() {
-        this.mapPool = this.project.createMapPool();
-        this.retinaPool = this.project.createMapPool({scale: 2});
+        // Used by the vector paths (json/pbf/xray/query) for both source and
+        // non-source projects.
         this.vectorMapPool = this.project.createMapPool({size: 256});
+        if (this.project.mml.source) {
+            // Vector-source raster tiles render in-process (out of scope for
+            // killable workers).
+            this.mapPool = this.project.createMapPool();
+            this.retinaPool = this.project.createMapPool({scale: 2});
+        } else {
+            // Raster tiles render in killable child processes. The retina pool is
+            // created lazily on the first @2x request — it's often unused and
+            // each worker holds a full map + Postgres connections.
+            this.renderPool = this.project.createRenderPool({targetSize: this.renderWorkers(), killAfterMs: this.renderKillAfter()});
+        }
+    };
+
+    renderPoolFor(scale) {
+        if (scale !== 2) return this.renderPool;
+        if (!this.retinaRenderPool) {
+            this.retinaRenderPool = this.project.createRenderPool({scale: 2, targetSize: this.renderWorkers(), killAfterMs: this.renderKillAfter()});
+        }
+        return this.retinaRenderPool;
+    };
+
+    destroyPools() {
+        if (this.renderPool) this.renderPool.destroyAll();
+        if (this.retinaRenderPool) this.retinaRenderPool.destroyAll();
+        this.renderPool = null;
+        this.retinaRenderPool = null;
+        [this.mapPool, this.retinaPool, this.vectorMapPool].forEach(function (pool) {
+            if (pool) pool.drain(function () { pool.destroyAllNow(); });
+        });
+        this.mapPool = null;
+        this.retinaPool = null;
+        this.vectorMapPool = null;
+    };
+
+    // Synchronous, best-effort SIGKILL of every render worker, for the process
+    // 'exit' handler (which cannot await the graceful destroyPools path).
+    killWorkers() {
+        if (this.renderPool) this.renderPool.killChildren();
+        if (this.retinaRenderPool) this.retinaRenderPool.killChildren();
+    };
+
+    // Resolve config: CLI option -> user config -> default. parseInt so a 0
+    // (no-floor) value survives, unlike a truthiness check.
+    renderWorkers() {
+        var c = this.project.config,
+            o = c.parsed_opts.render_workers,
+            v = parseInt(o !== undefined ? o : c.getFromUserConfig('renderWorkers', 6), 10);
+        return (isNaN(v) || v < 1) ? 6 : v;
+    };
+
+    renderKillAfter() {
+        var c = this.project.config,
+            o = c.parsed_opts.render_kill_after,
+            v = parseInt(o !== undefined ? o : c.getFromUserConfig('renderKillAfter', 5000), 10);
+        return isNaN(v) ? 5000 : v;  // 0 is valid: kill as soon as a visible tile needs the slot
     };
 }
 
