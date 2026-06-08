@@ -94,6 +94,10 @@ Configurable settings are:
 * dataInspectorLayers (object with layer names and true/false)
 * exportFormats (array of strings)
 * showCrosshairs (true/false)
+* postgisDatasourceDefaults (object of Mapnik PostGIS datasource params injected
+  into every `postgis` layer at load time — defaults to
+  `{asynchronous_request: true, max_async_connection: 12, max_size: 12}`. Set to
+  `{}` to disable. Project/localconfig values always win over these defaults.)
 
 ## Local config
 
