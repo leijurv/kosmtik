@@ -1,25 +1,43 @@
 L.Kosmtik.MetatileBounds = L.GridLayer.extend({
 
-    initialize: function (map) {
+    // Defaults describe the plain metatile grid; the offset-by-half variant
+    // (aggregation-unit boundaries) passes overrides through the constructor.
+    options: {
+        field: 'showMetatiles',
+        label: 'Display metatiles bounds (ctrl-alt-M)',
+        commandName: 'Metatiles bounds: toggle view',
+        keyCode: L.K.Keys.M,
+        // Shift every drawn box by half a metatile so the lines land on the
+        // aggregation-unit grid (the metatile grid offset half a metatile to a
+        // corner). See openstreetmap-carto's offset-grid road aggregation.
+        offsetHalf: false,
+        baseColor: '#444',
+        baseOpacity: 0.7,
+        dashColor: '#fff',
+        dashOpacity: 0.8
+    },
+
+    initialize: function (map, options) {
+        L.setOptions(this, options);
         this.map = map;
-        this.map.settingsForm.addElement(['showMetatiles', {handler: L.K.Switch, label: 'Display metatiles bounds (ctrl-alt-M)'}]);
+        this.map.settingsForm.addElement([this.options.field, {handler: L.K.Switch, label: this.options.label}]);
         this.map.on('settings:synced', function (e) {
-            if (e.helper.field === 'showMetatiles') this.toggle();
+            if (e.helper.field === this.options.field) this.toggle();
         }, this);
         this.map.commands.add({
-            keyCode: L.K.Keys.M,
+            keyCode: this.options.keyCode,
             altKey: true,
             ctrlKey: true,
-            callback: function () { this.map.settingsForm.toggle('showMetatiles'); },
+            callback: function () { this.map.settingsForm.toggle(this.options.field); },
             context: this,
-            name: 'Metatiles bounds: toggle view'
+            name: this.options.commandName
         });
         L.GridLayer.prototype.initialize.call(this);
         this.setTileSize();
     },
 
     toggle: function () {
-        if (L.K.Config.showMetatiles) this.map.addLayer(this);
+        if (L.K.Config[this.options.field]) this.map.addLayer(this);
         else this.map.removeLayer(this);
     },
 
@@ -78,29 +96,53 @@ L.Kosmtik.MetatileBounds = L.GridLayer.extend({
         // reports the old zoom; unproject() defaults to that old zoom and would
         // place the lines off-screen (and, since the tile is now tracked, they'd
         // never get redrawn). coords.z keeps the geometry correct regardless.
-        var tileSize = this.options.tileSize,
-            zoom = tilePoint.z !== undefined ? tilePoint.z : this._map.getZoom(),
+        var map = this._map,
+            tileSize = this.options.tileSize,
+            zoom = tilePoint.z !== undefined ? tilePoint.z : map.getZoom(),
             nwPoint = tilePoint.multiplyBy(tileSize),
-            sw = this._map.unproject(nwPoint.add([0, tileSize]), zoom),
-            se = this._map.unproject(nwPoint.add([tileSize, tileSize]), zoom),
-            ne = this._map.unproject(nwPoint.add([tileSize, 0]), zoom);
+            latlngs;
+        if (this.options.offsetHalf) {
+            // Aggregation-unit grid = the metatile grid shifted half a metatile,
+            // so its lines fall at each metatile's CENTRE (the aggregation cells
+            // are metatile-sized boxes centred on metatile corners, so their
+            // boundaries sit at (n+0.5)*metatile). Draw that as a cross through
+            // the tile centre, each arm spanning the tile's OWN footprint: arms
+            // from adjacent tiles abut into continuous lines, and because every
+            // segment stays inside the tile that draws it, the loaded-tile set
+            // (which covers the viewport) covers the whole grid — no half-tile
+            // gap along the south/east screen edges like a one-sided shift gives.
+            var half = tileSize / 2,
+                wMid = map.unproject(nwPoint.add([0, half]), zoom),
+                eMid = map.unproject(nwPoint.add([tileSize, half]), zoom),
+                nMid = map.unproject(nwPoint.add([half, 0]), zoom),
+                sMid = map.unproject(nwPoint.add([half, tileSize]), zoom);
+            latlngs = [[wMid, eMid], [nMid, sMid]];
+        } else {
+            // Each metatile draws its south + east edges; abutting tiles complete
+            // the grid. The edges span the tile's full footprint, so loaded tiles
+            // always cover the viewport.
+            var sw = map.unproject(nwPoint.add([0, tileSize]), zoom),
+                se = map.unproject(nwPoint.add([tileSize, tileSize]), zoom),
+                ne = map.unproject(nwPoint.add([tileSize, 0]), zoom);
+            latlngs = [sw, se, ne];
+        }
         var options = {
             renderer: this.renderer,
-            color: '#444',
+            color: this.options.baseColor,
             weight: 1,
-            opacity: 0.7,
+            opacity: this.options.baseOpacity,
             fill: false,
             interactive: false,
             noClip: true
         };
-        var grey = L.polyline([sw, se, ne], options);
-        this.vectorlayer.addLayer(grey);
-        options.color = '#fff';
+        var base = L.polyline(latlngs, options);
+        this.vectorlayer.addLayer(base);
+        options.color = this.options.dashColor;
         options.dashArray = '10,10';
-        options.opacity = 0.8;
-        var white = L.polyline([sw, se, ne], options);
-        this.vectorlayer.addLayer(white);
-        return [grey, white];
+        options.opacity = this.options.dashOpacity;
+        var dash = L.polyline(latlngs, options);
+        this.vectorlayer.addLayer(dash);
+        return [base, dash];
     },
 
     setTileSize: function () {

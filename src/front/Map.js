@@ -66,6 +66,19 @@ L.Kosmtik.Map = L.Map.extend({
         this.crosshairs = new L.K.Crosshairs(this);
         this.alert = new L.K.Alert(this);
         this.metatilesBounds = new L.K.MetatileBounds(this);
+        // Same grid offset by half a metatile, in blue dashes: the offset-grid
+        // aggregation-unit boundaries (see openstreetmap-carto road merging).
+        this.metatilesBoundsOffset = new L.K.MetatileBounds(this, {
+            field: 'showMetatilesOffset',
+            label: 'Display aggregation unit bounds (ctrl-alt-A)',
+            commandName: 'Aggregation unit bounds: toggle view',
+            keyCode: L.K.Keys.A,
+            offsetHalf: true,
+            baseColor: '#002b5c',
+            baseOpacity: 0.7,
+            dashColor: '#2d8cff',
+            dashOpacity: 0.9
+        });
         var tilelayerOptions = {
             version: L.K.Config.project.loadTime,
             tileSize: L.K.Config.project.tileSize,
