@@ -22,10 +22,10 @@
   "license": "WTFPL",
   "engines": {
     "npm": ">=8.0.0",
-    "node": ">=16.0.0"
+    "node": ">=20.0.0"
   },
   "dependencies": {
-    "@mapnik/mapnik": "^4.6.9",
+    "@mapnik/mapnik": "^4.8.0",
     "carto": "^1.2.0",
     "js-yaml": "^4.0.0",
     "json-localizer": "0.0.3",
