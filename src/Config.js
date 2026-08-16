@@ -1,6 +1,7 @@
 var path = require('path'),
     fs = require('fs'),
     semver = require('semver'),
+    carto = require('carto'),
     yaml = require('js-yaml'),
     StateBase = require('./back/StateBase.js').StateBase,
     Helpers = require('./back/Helpers.js').Helpers,
@@ -241,8 +242,18 @@ class Config extends StateBase {
     };
 
     defaultMapnikVersion() {
-        var version = semver(mapnik.versions.mapnik);
-        return version.format();
+        var version = semver(mapnik.versions.mapnik).format();
+        // `mapnik-reference` has no data for Mapnik 4.x — its newest entry is
+        // 3.0.22 — and its load() throws on a version it doesn't know, which
+        // takes the whole server down when a plugin serves it (for instance
+        // kosmtik-mapnik-reference on /mapnik-reference/). Carto never reads
+        // this option in the first place and always compiles against the
+        // newest reference it bundles, so clamp to that: it keeps the value
+        // loadable and makes the reference plugins agree with what the
+        // stylesheet was actually compiled against.
+        var latest = new carto.tree.Reference().getLatest();
+        if (latest && semver.gt(version, latest)) return latest;
+        return version;
     };
 }
 
